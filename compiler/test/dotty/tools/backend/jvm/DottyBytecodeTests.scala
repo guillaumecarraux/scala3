@@ -2009,6 +2009,41 @@ class DottyBytecodeTests extends DottyBytecodeTest {
       assertEquals(expected, clsNode.interfaces.asScala)
     }
   }
+
+  @Test def lastUseNullify(): Unit = {
+    val source =
+      s"""
+         |import scala.annotation.lastUse
+         |class A
+         |object Foo {
+         |  def foo =
+         |    val x = A()
+         |    println(x: @lastUse)
+         |}""".stripMargin
+
+
+
+
+    checkBCode(source){ dir =>
+      val fooClass = loadClassNode(dir.lookupName("Foo$.class", directory = false).input)
+
+      val fooMeth = getMethod(fooClass, "foo")
+
+      assertSameCode(fooMeth, List(
+        TypeOp(NEW, "A"),
+        Op(DUP),
+        Invoke(INVOKESPECIAL, "A", "<init>", "()V", itf = false),
+        VarOp(ASTORE, 1),
+        Field(GETSTATIC, "scala/Predef$", "MODULE$", "Lscala/Predef$;"),
+        VarOp(ALOAD, 1),
+        Op(ACONST_NULL),
+        VarOp(ASTORE, 1),
+        Invoke(INVOKEVIRTUAL, "scala/Predef$", "println", "(Ljava/lang/Object;)V", itf = false),
+        Op(RETURN)
+      ))
+
+    }
+  }
 }
 
 object invocationReceiversTestCode {
