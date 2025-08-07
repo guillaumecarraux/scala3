@@ -19,6 +19,8 @@ import util.Store
 import collection.mutable.{HashMap, LinkedHashMap, ListBuffer}
 
 import scala.compiletime.uninitialized
+import dotty.tools.dotc.transform.PostTyper.lastUseAttachment
+import dotty.tools.dotc.core.Flags
 
 object LambdaLift:
   import ast.tpd.*

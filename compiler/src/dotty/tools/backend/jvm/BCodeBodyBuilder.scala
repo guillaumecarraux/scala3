@@ -25,6 +25,7 @@ import dotty.tools.dotc.core.Phases.*
 import dotty.tools.dotc.core.Decorators.em
 import dotty.tools.dotc.report
 import dotty.tools.dotc.ast.Trees.SyntheticUnit
+import dotty.tools.dotc.transform.PostTyper.lastUseAttachment
 
 /*
  *
@@ -249,7 +250,7 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
           genLoadTo(elsep, expectedType, dest)
         else
           lineNumber(tree.cond)
-          genAdaptAndSendToDest(UNIT, expectedType, dest)
+          genAdaptAndSendToDest(UNIT, expectedType, dest, lastUses.contains(tree.symbol))
         expectedType
       end if
     }
@@ -393,6 +394,11 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
           }
           else {
             mnode.visitVarInsn(asm.Opcodes.ALOAD, 0)
+
+            if tree.hasAttachment(lastUseAttachment) then
+              emit(asm.Opcodes.ACONST_NULL)
+              mnode.visitVarInsn(asm.Opcodes.ASTORE, 0)
+
             // When compiling Array.scala, the constructor invokes `Array.this.super.<init>`. The expectedType
             // is `[Object` (computed by typeToBType, the type of This(Array) is `Array[T]`). If we would set
             // the generatedType to `Array` below, the call to adapt at the end would fail. The situation is
@@ -436,15 +442,12 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
             case None =>
               if (!sym.is(Package)) {
                 if (sym.is(Module)) genLoadModule(sym)
-                else locals.load(sym)
-                lastUses.get(sym) match
-                  case None => ()
-                  case Some(h) => if h.contains(t.hashCode()) then
+                else
+                  locals.load(sym)
+                  if t.hasAttachment(lastUseAttachment) then
                     emit(asm.Opcodes.ACONST_NULL)
                     val idx = locals.getOrMakeLocal(sym).idx
                     bc.store(idx, tk)
-                
-                
               }
             case Some(t) =>
               genLoad(t, generatedType)
@@ -495,10 +498,10 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
 
       // emit conversion and send to the right destination
       if generatedDest == LoadDestination.FallThrough then
-        genAdaptAndSendToDest(generatedType, expectedType, dest)
+        genAdaptAndSendToDest(generatedType, expectedType, dest, lastUses.contains(tree.symbol))
     end genLoadTo
 
-    def genAdaptAndSendToDest(generatedType: BType, expectedType: BType, dest: LoadDestination): Unit =
+    def genAdaptAndSendToDest(generatedType: BType, expectedType: BType, dest: LoadDestination, cleanSyntheticCopy: Boolean): Unit =
       if generatedType != expectedType then
         adapt(generatedType, expectedType)
 
@@ -515,6 +518,9 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
               bc.store(loc.idx, expectedType)
               bc.dropMany(stackDiff)
               bc.load(loc.idx, expectedType)
+              if cleanSyntheticCopy then
+                emit(asm.Opcodes.ACONST_NULL)
+                bc.store(loc.idx, expectedType)
           end if
           bc.goTo(label)
         case LoadDestination.Return =>
@@ -1725,6 +1731,13 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
           val lNull    = new asm.Label
           val lNonNull = new asm.Label
 
+          def cleanSyntheticCopy = 
+            if lastUses.contains(r.symbol) then
+              emit(asm.Opcodes.ACONST_NULL)
+              locals.store(eqEqTempLocal)
+
+
+
           genLoad(l, ObjectRef)
           stack.push(ObjectRef)
           genLoad(r, ObjectRef)
@@ -1736,10 +1749,12 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
           markProgramPoint(lNull)
           bc.drop(ObjectRef)
           locals.load(eqEqTempLocal)
+          cleanSyntheticCopy
           genCZJUMP(success, failure, Primitives.EQ, ObjectRef, targetIfNoJump = lNonNull)
 
           markProgramPoint(lNonNull)
           locals.load(eqEqTempLocal)
+          cleanSyntheticCopy
           genCallMethod(defn.Any_equals, InvokeStyle.Virtual)
           genCZJUMP(success, failure, Primitives.NE, BOOL, targetIfNoJump)
         }
