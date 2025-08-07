@@ -22,10 +22,18 @@ import NameKinds.WildcardParamName
 import cc.*
 import dotty.tools.dotc.transform.MacroAnnotations.hasMacroAnnotation
 import dotty.tools.dotc.core.NameKinds.DefaultGetterName
+import dotty.tools.dotc.util.Property.StickyKey
+import dotty.tools.dotc.transform.PostTyper.methodLastUses
 
 object PostTyper {
   val name: String = "posttyper"
   val description: String = "additional checks and cleanups after type checking"
+
+  val lastUseAttachment = StickyKey[Unit] //to attach on the variables themselves, which one is lastUsed
+
+  // method -> symbols with @lastUse annotation
+  val methodLastUses = StickyKey[Set[Symbol]]
+
 }
 
 /** A macro transform that runs immediately after typer and that performs the following functions:
@@ -55,6 +63,8 @@ object PostTyper {
  *
  *  (11) Minimizes `call` fields of `Inlined` nodes to just point to the toplevel
  *       class from which code was inlined.
+ *
+ *  (12) Replaces @lastUse annotation with an attachment, so it survives the erasure phase.
  *
  *  The reason for making this a macro transform is that some functions (in particular
  *  super and protected accessors and instantiation checks) are naturally top-down and
@@ -569,6 +579,29 @@ class PostTyper extends MacroTransform with InfoTransformer { thisPhase =>
         case tree: TypeTree =>
           val tpe = if tree.isInferred then CleanupRetains()(tree.tpe) else tree.tpe
           tree.withType(transformAnnotsIn(tpe))
+        case Typed(t, tpt: TypeTree) if tpt.tpe.hasAnnotation(defn.LastUseAnnot) =>
+
+          t match//notice that they look very similar, could be merged ?
+            case id: Ident =>
+              id.putAttachment(PostTyper.lastUseAttachment, ())//id is muted
+              val tpt_clean =  tpt.withType(tpt.tpe.dropAnnot(defn.LastUseAnnot))
+
+              if (tree.tpe.typeSymbol.isPrimitiveValueClass || tree.symbol.is(Flags.Method))
+                report.error("`@lastUse` annotation cannot be used on primitives and methods", tpt.sourcePos)
+
+              // PostTyper.lastUses.add(t.symbol)
+
+              println(s"source method for sym ${t.symbol.name}: ${ctx.tree}") //ctx.tree is always correct !
+
+              val others = ctx.tree.getAttachment(methodLastUses).getOrElse(Set.empty)
+              ctx.tree.putAttachment(methodLastUses, others + t.symbol)
+
+              Typed(id, tpt_clean)
+
+            case _ =>
+              report.error("`@lastUse` annotation can only be applied on local variables", tpt.srcPos)
+              tree
+
         case Typed(Ident(nme.WILDCARD), _) =>
           withMode(Mode.Pattern)(super.transform(tree))
             // The added mode signals that bounds in a pattern need not
