@@ -3,11 +3,14 @@ import scala.annotation.lastUse
 class A
 
 object Verif:
+    val global = A()
+
     def test1 =
         val a = A()
 
         println(a: @lastUse)
-        println(a)    // error
+        println(a) // error
+
 
     def test2 =
         val a = A()
@@ -53,10 +56,28 @@ object Verif:
 
         val f = () => a // error
 
-    def test8 =
+    def test8 = 
         val a = A()
-
-        val f = () => a
-
+        
+        def f = 
+            def g = println(a)
+            g
+        
         println(a: @lastUse)
-        f()
+
+        f // error
+
+    def test9 = 
+        val l = List(1,2)
+        val i = 1
+        def f = () => 1
+
+        val j = i: @lastUse // error
+        val g = f: @lastUse // error
+        val g2 = global: @lastUse // error
+
+    def test10 =
+        val  a = A()
+
+        def f = println(a: @lastUse) // error
+

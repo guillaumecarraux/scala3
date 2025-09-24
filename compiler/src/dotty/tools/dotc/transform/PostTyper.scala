@@ -22,16 +22,19 @@ import NameKinds.WildcardParamName
 import cc.*
 import dotty.tools.dotc.transform.MacroAnnotations.hasMacroAnnotation
 import dotty.tools.dotc.core.NameKinds.DefaultGetterName
-import dotty.tools.dotc.util.Property.StickyKey
+import dotty.tools.dotc.util.Property.{Key, StickyKey}
+import dotty.tools.dotc.transform.PostTyper.enclosingMethod
 import dotty.tools.dotc.transform.PostTyper.methodLastUses
 
 object PostTyper {
   val name: String = "posttyper"
   val description: String = "additional checks and cleanups after type checking"
 
-  val lastUseAttachment = StickyKey[Unit] //to attach on the variables themselves, which one is lastUsed
+  val lastUseAttachment = StickyKey[Unit]
 
-  // method -> symbols with @lastUse annotation
+  val enclosingMethod = Key[DefDef[?]]
+
+  /** Attachment on a Method that stores local variables annotated with @lastUse */
   val methodLastUses = StickyKey[Set[Symbol]]
 
 }
@@ -489,13 +492,14 @@ class PostTyper extends MacroTransform with InfoTransformer { thisPhase =>
           val tree1 = cpy.ValDef(tree)(tpt = makeOverrideTypeDeclared(tree.symbol, tree.tpt))
           if tree1.removeAttachment(desugar.UntupledParam).isDefined then
             checkStableSelection(tree.rhs)
+
           processValOrDefDef(super.transform(tree1))
         case tree: DefDef =>
           registerIfHasMacroAnnotations(tree)
           Checking.checkPolyFunctionType(tree.tpt)
           annotateContextResults(tree)
           val tree1 = cpy.DefDef(tree)(tpt = makeOverrideTypeDeclared(tree.symbol, tree.tpt))
-          processValOrDefDef(superAcc.wrapDefDef(tree1)(super.transform(tree1).asInstanceOf[DefDef]))
+          processValOrDefDef(superAcc.wrapDefDef(tree1)(super.transform(tree1)(using ctx.withProperty(enclosingMethod, Some(tree1))).asInstanceOf[DefDef]))//I dont think I need a stickykey since i will never copy the defdef itself when managing its components right ? AND I dont  need it in the next phases
         case tree: TypeDef =>
           registerIfHasMacroAnnotations(tree)
           val sym = tree.symbol
@@ -580,27 +584,17 @@ class PostTyper extends MacroTransform with InfoTransformer { thisPhase =>
           val tpe = if tree.isInferred then CleanupRetains()(tree.tpe) else tree.tpe
           tree.withType(transformAnnotsIn(tpe))
         case Typed(t, tpt: TypeTree) if tpt.tpe.hasAnnotation(defn.LastUseAnnot) =>
-
-          t match//notice that they look very similar, could be merged ?
-            case id: Ident =>
-              id.putAttachment(PostTyper.lastUseAttachment, ())//id is muted
-              val tpt_clean =  tpt.withType(tpt.tpe.dropAnnot(defn.LastUseAnnot))
-
-              if (tree.tpe.typeSymbol.isPrimitiveValueClass || tree.symbol.is(Flags.Method))
-                report.error("`@lastUse` annotation cannot be used on primitives and methods", tpt.sourcePos)
-
-              // PostTyper.lastUses.add(t.symbol)
-
-              println(s"source method for sym ${t.symbol.name}: ${ctx.tree}") //ctx.tree is always correct !
-
-              val others = ctx.tree.getAttachment(methodLastUses).getOrElse(Set.empty)
-              ctx.tree.putAttachment(methodLastUses, others + t.symbol)
-
-              Typed(id, tpt_clean)
-
+          t match
+            case _: Ident =>
+              t.putAttachment(PostTyper.lastUseAttachment, ())
+              val enclosing = ctx.property(enclosingMethod).get
+              val others = enclosing.getAttachment(methodLastUses).getOrElse(Set.empty)
+              //attach the symbol to the method
+              enclosing.putAttachment(methodLastUses, others + t.symbol)
+              Typed(t, tpt)
             case _ =>
-              report.error("`@lastUse` annotation can only be applied on local variables", tpt.srcPos)
-              tree
+              report.error("`@lastUse` annotation can only be applied on local variables", tree.srcPos)
+              Typed(t, tpt)
 
         case Typed(Ident(nme.WILDCARD), _) =>
           withMode(Mode.Pattern)(super.transform(tree))

@@ -60,6 +60,7 @@ class Compiler {
     List(new InstrumentCoverage) ::  // Perform instrumentation for code coverage (if -coverage-out is set)
     List(new CrossVersionChecks,     // Check issues related to deprecated and experimental
          new FirstTransform,         // Some transformations to put trees into a canonical form
+         new VerifyLastUseAnnotations, // Well actually it has its own tree traverser, so it does not make that much sense to be here
          new CheckReentrant,         // Internal use only: Check that compiled program has no data races involving global vars
          new ElimPackagePrefixes,    // Eliminate references to package prefixes in Select nodes
          new CookComments,           // Cook the comments: expand variables, doc, etc.
@@ -143,8 +144,7 @@ class Compiler {
          new sjs.JUnitBootstrappers, // Generate JUnit-specific bootstrapper classes for Scala.js (not enabled by default)
          new CollectEntryPoints,     // Collect all entry points and save them in the context
          new CollectSuperCalls,      // Find classes that are called with super
-         new RepeatableAnnotations,
-         new VerifyLastUseAnnotations) :: // Aggregate repeatable annotations
+         new RepeatableAnnotations) :: // Aggregate repeatable annotations 
     Nil
 
   /** Generate the output of the compilation */

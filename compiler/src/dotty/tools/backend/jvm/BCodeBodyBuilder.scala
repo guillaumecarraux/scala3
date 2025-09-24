@@ -25,8 +25,7 @@ import dotty.tools.dotc.core.Phases.*
 import dotty.tools.dotc.core.Decorators.em
 import dotty.tools.dotc.report
 import dotty.tools.dotc.ast.Trees.SyntheticUnit
-import dotty.tools.dotc.transform.PostTyper.{lastUseAttachment, methodLastUses}
-import scala.annotation.lastUse
+import dotty.tools.dotc.transform.PostTyper.lastUseAttachment
 
 /*
  *
@@ -251,7 +250,7 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
           genLoadTo(elsep, expectedType, dest)
         else
           lineNumber(tree.cond)
-          genAdaptAndSendToDest(UNIT, expectedType, dest, tree.symbol)
+          genAdaptAndSendToDest(UNIT, expectedType, dest, lastUses.contains(tree.symbol))
         expectedType
       end if
     }
@@ -395,6 +394,11 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
           }
           else {
             mnode.visitVarInsn(asm.Opcodes.ALOAD, 0)
+
+            if tree.hasAttachment(lastUseAttachment) then
+              emit(asm.Opcodes.ACONST_NULL)
+              mnode.visitVarInsn(asm.Opcodes.ASTORE, 0)
+
             // When compiling Array.scala, the constructor invokes `Array.this.super.<init>`. The expectedType
             // is `[Object` (computed by typeToBType, the type of This(Array) is `Array[T]`). If we would set
             // the generatedType to `Array` below, the call to adapt at the end would fail. The situation is
@@ -442,8 +446,6 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
                   locals.load(sym)
                   if t.hasAttachment(lastUseAttachment) then
                     emit(asm.Opcodes.ACONST_NULL)
-
-                    if(!locals.contains(sym)) println("/!\\ annotation on a local that didn't exist !")//you're  very good  if this triggers
                     val idx = locals.getOrMakeLocal(sym).idx
                     bc.store(idx, tk)
               }
@@ -496,10 +498,10 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
 
       // emit conversion and send to the right destination
       if generatedDest == LoadDestination.FallThrough then
-        genAdaptAndSendToDest(generatedType, expectedType, dest, tree.symbol)
+        genAdaptAndSendToDest(generatedType, expectedType, dest, lastUses.contains(tree.symbol))
     end genLoadTo
 
-    def genAdaptAndSendToDest(generatedType: BType, expectedType: BType, dest: LoadDestination, topSymbol: Symbol): Unit =
+    def genAdaptAndSendToDest(generatedType: BType, expectedType: BType, dest: LoadDestination, cleanSyntheticCopy: Boolean): Unit =
       if generatedType != expectedType then
         adapt(generatedType, expectedType)
 
@@ -516,12 +518,9 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
               bc.store(loc.idx, expectedType)
               bc dropMany stackDiff
               bc.load(loc.idx, expectedType)
-
-              if lastUses.contains(topSymbol) then
-                report.debuglog(s"removing copy of $topSymbol from genAdapt")
+              if cleanSyntheticCopy then
                 emit(asm.Opcodes.ACONST_NULL)
                 bc.store(loc.idx, expectedType)
-
           end if
           bc goTo label
         case LoadDestination.Return =>
@@ -1728,23 +1727,35 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
           genCZJUMP(success, failure, Primitives.NE, BOOL, targetIfNoJump)
         } else {
           // l == r -> if (l eq null) r eq null else l.equals(r)
+          val eqEqTempLocal = locals.makeLocal(ObjectRef, nme.EQEQ_LOCAL_VAR.mangledString, defn.ObjectType, r.span)
           val lNull    = new asm.Label
           val lNonNull = new asm.Label
 
-          genLoad(r, ObjectRef) //  load rhs --> (r)
+          def cleanSyntheticCopy = 
+            if lastUses.contains(r.symbol) then
+              emit(asm.Opcodes.ACONST_NULL)
+              locals.store(eqEqTempLocal)
+
+
+
+          genLoad(l, ObjectRef)
           stack.push(ObjectRef)
-          genLoad(l, ObjectRef) // load lhs --> (l,r)
+          genLoad(r, ObjectRef)
           stack.pop()
-          bc dup ObjectRef // duplicate top stack variable --> (l,l,r)
-          genCZJUMP(lNull, lNonNull, Primitives.EQ, ObjectRef, targetIfNoJump = lNull) // compare lhs with NULL --> (l,r)
+          locals.store(eqEqTempLocal)
+          bc dup ObjectRef
+          genCZJUMP(lNull, lNonNull, Primitives.EQ, ObjectRef, targetIfNoJump = lNull)
 
           markProgramPoint(lNull)
-          bc drop ObjectRef // drop top stack variable --> (r)
-          genCZJUMP(success, failure, Primitives.EQ, ObjectRef, targetIfNoJump = lNonNull) // --> (-)
+          bc drop ObjectRef
+          locals.load(eqEqTempLocal)
+          cleanSyntheticCopy
+          genCZJUMP(success, failure, Primitives.EQ, ObjectRef, targetIfNoJump = lNonNull)
 
           markProgramPoint(lNonNull)
-          emit(asm.Opcodes.SWAP) //swap l and r for correct .equals ordering --> (r,l)
-          genCallMethod(defn.Any_equals, InvokeStyle.Virtual) // --> (-)
+          locals.load(eqEqTempLocal)
+          cleanSyntheticCopy
+          genCallMethod(defn.Any_equals, InvokeStyle.Virtual)
           genCZJUMP(success, failure, Primitives.NE, BOOL, targetIfNoJump)
         }
       }

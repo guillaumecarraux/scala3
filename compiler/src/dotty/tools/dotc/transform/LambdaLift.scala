@@ -286,10 +286,7 @@ class LambdaLift extends MiniPhase with IdentityDenotTransformer { thisPhase =>
         val lft = lifter
         if (prefix eq NoPrefix)
           if (sym.enclosure != lft.currentEnclosure && !sym.isStatic)
-            if tree.hasAttachment(lastUseAttachment) && sym.is(Flags.Local) then
-              tree.removeAttachment(lastUseAttachment)//this will still get analyzed bc the posttyper map stores it. I cant drop it. but this is needed to not apply the lastUse
-              report.error(s"cannot annotate free local variable ${sym.name} @lastUse in a lambda",tree.sourcePos)
-            (if (sym is Method) lft.memberRef(sym) else lft.proxyRef(sym)).withSpan(tree.span)
+           (if (sym is Method) lft.memberRef(sym) else lft.proxyRef(sym)).withSpan(tree.span)
           else if (sym.owner.isClass) // sym was lifted out
             ref(sym).withSpan(tree.span)
           else
