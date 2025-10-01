@@ -437,6 +437,14 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
               if (!sym.is(Package)) {
                 if (sym.is(Module)) genLoadModule(sym)
                 else locals.load(sym)
+                lastUses.get(sym) match
+                  case None => ()
+                  case Some(h) => if h.contains(t.hashCode()) then
+                    emit(asm.Opcodes.ACONST_NULL)
+                    val idx = locals.getOrMakeLocal(sym).idx
+                    bc.store(idx, tk)
+                
+                
               }
             case Some(t) =>
               genLoad(t, generatedType)

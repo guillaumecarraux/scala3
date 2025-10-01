@@ -20,6 +20,9 @@ import dotty.tools.dotc.core.Types.*
 import dotty.tools.dotc.core.Contexts.*
 import dotty.tools.dotc.util.Spans.*
 import dotty.tools.dotc.report
+import dotty.tools.dotc.transform.NullifyAtLastUse.VariableNullPoints
+import dotty.tools.dotc.transform.NullifyAtLastUse.nullPointsProperty
+import dotty.tools.dotc.transform.NullifyAtLastUse
 
 
 /*
@@ -433,6 +436,8 @@ trait BCodeSkelBuilder extends BCodeHelpers {
     // line numbers
     var lastEmittedLineNr          = -1
 
+    var lastUses: VariableNullPoints = null
+
     object bc extends JCodeMethodN {
       override def jmethod = PlainSkelBuilder.this.mnode
     }
@@ -648,6 +653,7 @@ trait BCodeSkelBuilder extends BCodeHelpers {
       val rhs = dd.rhs
       locals.reset(isStaticMethod = methSymbol.isStaticMember)
       jumpDest = immutable.Map.empty
+      lastUses = dd.getAttachment(nullPointsProperty).getOrElse(NullifyAtLastUse.startPoints)
 
       // check previous invocation of genDefDef exited as many varsInScope as it entered.
       assert(varsInScope == null, "Unbalanced entering/exiting of GenBCode's genBlock().")
