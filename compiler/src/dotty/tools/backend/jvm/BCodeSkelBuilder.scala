@@ -20,10 +20,13 @@ import dotty.tools.dotc.core.Types.*
 import dotty.tools.dotc.core.Contexts.*
 import dotty.tools.dotc.util.Spans.*
 import dotty.tools.dotc.report
-import dotty.tools.dotc.transform.NullifyAtLastUse.VariableNullPoints
-import dotty.tools.dotc.transform.NullifyAtLastUse.nullPointsProperty
+import dotty.tools.dotc.transform.NullifyAtLastUse.VariableLastAccess
+import dotty.tools.dotc.transform.NullifyAtLastUse.TreeLastVariables
 import dotty.tools.dotc.transform.NullifyAtLastUse
 import dotty.tools.dotc.transform.PostTyper.methodLastUses
+import dotty.tools.dotc.transform.NullifyAtLastUse.varsToNullifyProperty
+import dotty.tools.dotc.transform.NullifyAtLastUse.PreciseTreeHash
+import dotty.tools.dotc.transform.NullifyAtLastUse.RelativePosition
 
 
 /*
@@ -437,9 +440,10 @@ trait BCodeSkelBuilder extends BCodeHelpers {
     // line numbers
     var lastEmittedLineNr          = -1
     // lastUse annotated variables
-    var lastUses = Set.empty[Symbol]
+    var lastUses = Set.empty[Symbol]//I should be able to remove this since compiler gen copies will be removed anyway
+    var nullifyPoints: TreeLastVariables = Map.empty
 
-    // var lastUses: VariableNullPoints = null
+    // var lastUses: VariableLastAccess = null
 
     object bc extends JCodeMethodN {
       override def jmethod = PlainSkelBuilder.this.mnode
@@ -658,6 +662,7 @@ trait BCodeSkelBuilder extends BCodeHelpers {
       jumpDest = immutable.Map.empty
       // lastUses = dd.getAttachment(nullPointsProperty).getOrElse(NullifyAtLastUse.startPoints)//TODO rename one
       lastUses = dd.getAttachment(methodLastUses).getOrElse(Set.empty[Symbol])
+      nullifyPoints = dd.getAttachment((varsToNullifyProperty)).getOrElse(Map.empty)
 
       // check previous invocation of genDefDef exited as many varsInScope as it entered.
       assert(varsInScope == null, "Unbalanced entering/exiting of GenBCode's genBlock().")
@@ -905,7 +910,9 @@ trait BCodeSkelBuilder extends BCodeHelpers {
                   else ""}",
               ctx.source.atSpan(NoSpan)
             )
-          else
+          else //TODO check that the rhs keeps the same hash, even when trimmed (else update its hash)
+            // val nullifyArgs = nullifyPoints.getOrElse(PreciseTreeHash(rhs.hashCode(), RelativePosition.Before), Set.empty) TODO check recursive method
+            // nullifyPoints = nullifyPoints.updated(PreciseTreeHash(trimmedRhs.hashCode(), RelativePosition.Before), nullifyArgs)
             genLoadTo(trimmedRhs, returnType, LoadDestination.Return)
 
           if (emitVars) {

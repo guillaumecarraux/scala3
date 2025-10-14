@@ -26,6 +26,8 @@ import dotty.tools.dotc.core.Decorators.em
 import dotty.tools.dotc.report
 import dotty.tools.dotc.ast.Trees.SyntheticUnit
 import dotty.tools.dotc.transform.PostTyper.lastUseAttachment
+import dotty.tools.dotc.transform.NullifyAtLastUse.RelativePosition
+import dotty.tools.dotc.transform.NullifyAtLastUse.PreciseTreeHash
 
 /*
  *
@@ -248,7 +250,9 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
         markProgramPoint(failure)
         if hasElse then
           genLoadTo(elsep, expectedType, dest)
-        else
+        else//TODO check labels. it should go postIf, enable only with auto-annotation enabled
+        //TODO maybe attach on whole if branch. nullifies twice everything
+          genNullifyAllSymbols(elsep, RelativePosition.Before)//TODO necessary ? and after/before lineNumber ?
           lineNumber(tree.cond)
           genAdaptAndSendToDest(UNIT, expectedType, dest, lastUses.contains(tree.symbol))
         expectedType
@@ -310,6 +314,8 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
 
       lineNumber(tree)
 
+      genNullifyAllSymbols(tree, RelativePosition.Before)
+
       tree match {
         case tree@ValDef(_, _, _) =>
           val sym = tree.symbol
@@ -326,6 +332,7 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
           }
           generatedType = UNIT
 
+          
         case t @ If(_, _, _) =>
           generatedType = genLoadIfTo(t, expectedType, dest)
           generatedDest = dest
@@ -444,7 +451,8 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
                 if (sym.is(Module)) genLoadModule(sym)
                 else
                   locals.load(sym)
-                  if t.hasAttachment(lastUseAttachment) then
+                  //code for nullifying after lastuseAttachment
+                  if !ctx.settings.Yautoremove.value && t.hasAttachment(lastUseAttachment) then
                     emit(asm.Opcodes.ACONST_NULL)
                     val idx = locals.getOrMakeLocal(sym).idx
                     bc.store(idx, tk)
@@ -496,6 +504,8 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
         case _ => abort(s"Unexpected tree in genLoad: $tree/${tree.getClass} at: ${tree.span}")
       }
 
+      genNullifyAllSymbols(tree, RelativePosition.After)
+
       // emit conversion and send to the right destination
       if generatedDest == LoadDestination.FallThrough then
         genAdaptAndSendToDest(generatedType, expectedType, dest, lastUses.contains(tree.symbol))
@@ -518,7 +528,7 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
               bc.store(loc.idx, expectedType)
               bc.dropMany(stackDiff)
               bc.load(loc.idx, expectedType)
-              if cleanSyntheticCopy then
+              if cleanSyntheticCopy || ctx.settings.Yautoremove.value then
                 emit(asm.Opcodes.ACONST_NULL)
                 bc.store(loc.idx, expectedType)
           end if
@@ -1731,8 +1741,9 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
           val lNull    = new asm.Label
           val lNonNull = new asm.Label
 
+
           def cleanSyntheticCopy = 
-            if lastUses.contains(r.symbol) then
+            if ctx.settings.Yautoremove.value || lastUses.contains(r.symbol) then
               emit(asm.Opcodes.ACONST_NULL)
               locals.store(eqEqTempLocal)
 
@@ -1862,6 +1873,20 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
 
       generatedType
     }
+
+    private def genNullifySymbol(sym: Symbol): Unit = {
+      mnode.visitLdcInsn(s"[NULLIFIER]: Nullifying $sym") 
+      mnode.visitInsn(Opcodes.POP)
+      emit(asm.Opcodes.ACONST_NULL)
+      val idx= locals.getOrMakeLocal(sym).idx
+      bc.store(idx, symInfoTK(sym))
+    }
+
+    private def genNullifyAllSymbols(tree: Tree, pos: RelativePosition): Unit = {
+      nullifyPoints
+        .getOrElse(PreciseTreeHash(tree.hashCode(), pos), Set.empty)
+        .foreach((genNullifySymbol))
+    }
   }
 
   /** Does this symbol actually correspond to an interface that will be emitted?
@@ -1872,6 +1897,7 @@ trait BCodeBodyBuilder extends BCodeSkelBuilder {
    */
   private def isEmittedInterface(sym: Symbol): Boolean = sym.isInterface ||
     sym.is(JavaDefined) && (toDenot(sym).isAnnotation || sym.is(ModuleClass) && (sym.companionClass.is(PureInterface)) || sym.companionClass.is(Trait))
+
 
 
 }
